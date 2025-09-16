@@ -1,4 +1,4 @@
-# MOAD-FNet
+# Multimodal Outer Arithmetic Block Dual Fusion of Whole Slide Images and Omics Data for Precision Oncology
 
 Welcome to the official repository for **MOAD-FNet**, a multimodal dual-fusion framework that integrates DNA methylation data with whole slide images (WSIs) for precision oncology.  
 
