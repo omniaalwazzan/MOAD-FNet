@@ -1,26 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Sep 24 17:13:42 2024
-
 @author: omnia
 """
 
-from models import * # here we import MOAB and everything realted to it
-import numpy as np
-import pandas as pd
-import pickle
-import gc
-import pdb
 
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-
 from collections import OrderedDict
-import os
 from os.path import join
+import pdb
+
+import numpy as np
+
+from TMIL_MOAB import MOAB, BilinearFusion, SNNOmics
+device= "cuda" if torch.cuda.is_available() else "cpu"
+
 #%%
 
 ###
@@ -508,142 +503,7 @@ class MultiheadAttention(Module):
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights, need_raw=need_raw,
                 attn_mask=attn_mask)
-
 #%%
-
-class conv_(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.Conv_ = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0),   ### fix it by tunning [1,3,7]
-            nn.Dropout(p=0.25)
-            #nn.BatchNorm2d(mid_channels),
-            #nn.ReLU(inplace=True)
-            )
-
-    def forward(self, x):
-        return self.Conv_(x)
-
-#%%
-             ### Outer subtraction ###
-
-
-def append_0_s(x1,x3):
-    b = torch.tensor([[0]]).to(device=DEVICE,dtype=torch.float)
-    x1 = torch.cat((b.expand((x1.shape[0],1)),x1),dim=1)
-    x3 = torch.cat((b.expand((x3.shape[0],1)),x3),dim=1)
-    x_p = x3.view(x3.shape[0], x3.shape[1], 1) - x1.view(x1.shape[0], 1, x1.shape[1])
-    x_p = torch.sigmoid(x_p)
-    return x_p
-
-                ### Outer addition ###
-
-def append_0(x1,x3):
-    b = torch.tensor([[0]]).to(device=DEVICE,dtype=torch.float)
-    x1 = torch.cat((b.expand((x1.shape[0],1)),x1),dim=1)
-
-    x3 = torch.cat((b.expand((x3.shape[0],1)),x3),dim=1)
-
-    x_p = x3.view(x3.shape[0], x3.shape[1], 1)+ x1.view(x1.shape[0], 1, x1.shape[1])
-    x_p = torch.sigmoid(x_p)
-    return x_p
-
-
-                ### Outer product ###
-
-def append_1(x1,x3):
-    b = torch.tensor([[1]]).to(device=DEVICE,dtype=torch.float)
-    x1 = torch.cat((b.expand((x1.shape[0],1)),x1),dim=1)
-    x3 = torch.cat((b.expand((x3.shape[0],1)),x3),dim=1)
-
-    x_p = x3.view(x3.shape[0], x3.shape[1], 1)* x1.view(x1.shape[0], 1, x1.shape[1])
-    x_p = torch.sigmoid(x_p)
-
-    return x_p
-
-                ### Outer division ###
-
-def append_1_d(x1,x3):
-    b = torch.tensor([[1]]).to(device=DEVICE,dtype=torch.float)
-    x1 = torch.cat((b.expand((x1.shape[0],1)),x1),dim=1)
-
-    x3 = torch.cat((b.expand((x3.shape[0],1)),x3),dim=1)
-
-    x1_ = torch.full_like(x1, fill_value=float(1e-10))
-    x1 = torch.add(x1, x1_)
-
-
-    x_p = x3.view(x3.shape[0], x3.shape[1], 1)/ x1.view(x1.shape[0], 1, x1.shape[1])
-    # Applying Leaky ReLU activation function with a negative slope of 0.1
-
-    
-    x_p = torch.sigmoid(x_p)
-
-    return x_p
-
-
-class MOAB(nn.Module):
-
-    #def __init__(self, model_image,model_gens,nb_classes):
-    def __init__(self,nb_classes):
-
-        super(MOAB, self).__init__()
-        #self.model_image =  model_image
-        #self.model_gens = model_gens
-        self.fc = nn.Linear(66049, 512) #257*257
-        self.dropout = nn.Dropout(p=0.25) # I changed the dropout for ABMIL from 0.1 to 0.25
-        self.layer_out = nn.Linear(512, nb_classes)
-        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)
-   
-
-        self.conv_stack= conv_(4,1)
-
-    def forward(self, x1,x3):
-
-        x3 = torch.unsqueeze(x3,0)
-
-        x3 = x3.view(x3.size(0), -1)
-        
-        ## outer addition branch (appending 0)
-        x_add = append_0(x1,x3)
-        x_add = torch.unsqueeze(x_add, 1)
-        #print('x_add',x_add)
-
-        ## outer subtraction branch (appending 0)
-        x_sub = append_0_s(x1,x3)
-        x_sub = torch.unsqueeze(x_sub, 1)
-        #print('x_sub',x_sub)
-
-        ## outer product branch (appending 1)
-        x_pro = append_1(x1,x3)
-        x_pro = torch.unsqueeze(x_pro, 1)
-        #print('x_pro',x_pro)
-
-
-        ## outer divison branch (appending 1)
-        x_div = append_1_d(x1,x3)
-        x_div = torch.unsqueeze(x_div, 1)
-        x_div = self.leaky_relu(x_div)
-        #print('div',x_div)
-
-        ## combine 4 branches on the channel dim
-        x = torch.cat((x_add,x_sub,x_pro,x_div),dim=1)
-
-        ## use a conv (1x1)
-        x = self.conv_stack(x)
-        x = x.flatten(start_dim=1)
-        x = self.leaky_relu(x)
-        x = self.fc(x)
-        x = F.relu(x)
-        x = self.dropout(x)
-        x = self.layer_out(x) # this is x_logits
-        x_out = F.softmax(x, dim=1)
-
-        return x # becuase in ABMIL we feed moab output to another linear layer that is like the ABMIL setup
-#%%
-
-
-
 
 #%%
 """
@@ -655,159 +515,6 @@ Mobadersany, Pooya, et al. "Predicting cancer outcomes from histology and genomi
 
 """
 #%%
-
-
-
-class BilinearFusion(nn.Module):
-    r"""
-    Late Fusion Block using Bilinear Pooling
-
-    args:
-        skip (int): Whether to input features at the end of the layer
-        use_bilinear (bool): Whether to use bilinear pooling during information gating
-        gate1 (bool): Whether to apply gating to modality 1
-        gate2 (bool): Whether to apply gating to modality 2
-        dim1 (int): Feature mapping dimension for modality 1
-        dim2 (int): Feature mapping dimension for modality 2
-        scale_dim1 (int): Scalar value to reduce modality 1 before the linear layer
-        scale_dim2 (int): Scalar value to reduce modality 2 before the linear layer
-        mmhid (int): Feature mapping dimension after multimodal fusion
-        dropout_rate (float): Dropout rate
-    """
-    def __init__(self, skip=0, use_bilinear=0, gate1=1, gate2=1, dim1=128, dim2=128, scale_dim1=1, scale_dim2=1, mmhid=256, dropout_rate=0.25):
-        super(BilinearFusion, self).__init__()
-        self.skip = skip
-        self.use_bilinear = use_bilinear
-        self.gate1 = gate1
-        self.gate2 = gate2
-
-        dim1_og, dim2_og, dim1, dim2 = dim1, dim2, dim1//scale_dim1, dim2//scale_dim2
-        skip_dim = dim1_og+dim2_og if skip else 0
-
-        self.linear_h1 = nn.Sequential(nn.Linear(dim1_og, dim1), nn.ReLU())
-        self.linear_z1 = nn.Bilinear(dim1_og, dim2_og, dim1) if use_bilinear else nn.Sequential(nn.Linear(dim1_og+dim2_og, dim1))
-        self.linear_o1 = nn.Sequential(nn.Linear(dim1, dim1), nn.ReLU(), nn.Dropout(p=dropout_rate))
-
-        self.linear_h2 = nn.Sequential(nn.Linear(dim2_og, dim2), nn.ReLU())
-        self.linear_z2 = nn.Bilinear(dim1_og, dim2_og, dim2) if use_bilinear else nn.Sequential(nn.Linear(dim1_og+dim2_og, dim2))
-        self.linear_o2 = nn.Sequential(nn.Linear(dim2, dim2), nn.ReLU(), nn.Dropout(p=dropout_rate))
-
-        self.post_fusion_dropout = nn.Dropout(p=dropout_rate)
-        self.encoder1 = nn.Sequential(nn.Linear((dim1+1)*(dim2+1), 256), nn.ReLU(), nn.Dropout(p=dropout_rate))
-        self.encoder2 = nn.Sequential(nn.Linear(256+skip_dim, mmhid), nn.ReLU(), nn.Dropout(p=dropout_rate))
-
-    def forward(self, vec1, vec2):
-        
-        ### Gated Multimodal Units
-        if self.gate1:
-            h1 = self.linear_h1(vec1)
-            z1 = self.linear_z1(vec1, vec2) if self.use_bilinear else self.linear_z1(torch.cat((vec1, vec2), dim=1))
-            o1 = self.linear_o1(nn.Sigmoid()(z1)*h1)
-        else:
-            h1 = self.linear_h1(vec1)
-            o1 = self.linear_o1(h1)
-
-        if self.gate2:
-            h2 = self.linear_h2(vec2)
-            z2 = self.linear_z2(vec1, vec2) if self.use_bilinear else self.linear_z2(torch.cat((vec1, vec2), dim=1))
-            o2 = self.linear_o2(nn.Sigmoid()(z2)*h2)
-        else:
-            h2 = self.linear_h2(vec2)
-            o2 = self.linear_o2(h2)
-
-        ### Fusion
-        o1 = torch.cat((o1, torch.FloatTensor(o1.shape[0], 1).fill_(1)), 1) # TODO change back to cuda 
-        o2 = torch.cat((o2, torch.FloatTensor(o2.shape[0], 1).fill_(1)), 1) # # TODO change back to cuda 
-        o12 = torch.bmm(o1.unsqueeze(2), o2.unsqueeze(1)).flatten(start_dim=1) # BATCH_SIZE X 1024
-        out = self.post_fusion_dropout(o12)
-        out = self.encoder1(out)
-        if self.skip: out = torch.cat((out, vec1, vec2), 1)
-        out = self.encoder2(out)
-        return out
-
-#%%
-
-
-##########################
-#### Genomic SNN FC Model ####
-##########################
-
-def SNN_Block(dim1, dim2, dropout=0.25):
-    r"""
-    Multilayer Reception Block w/ Self-Normalization (Linear + ELU + Alpha Dropout)
-
-    args:
-        dim1 (int): Dimension of input features
-        dim2 (int): Dimension of output features
-        dropout (float): Dropout rate
-    """
-    import torch.nn as nn
-
-    return nn.Sequential(
-            nn.Linear(dim1, dim2),
-            nn.ELU(),
-            nn.AlphaDropout(p=dropout, inplace=False))
-
-
-class SNNOmics(nn.Module):
-    def __init__(self, omic_input_dim: int, model_size_omic: str='small', n_classes: int=256):
-        super(SNNOmics, self).__init__()
-        self.n_classes = n_classes
-        self.size_dict_omic = {'small': [256, 256], 'big': [1024, 1024, 1024, 256]}
-        
-        ### Constructing Genomic SNN
-        hidden = self.size_dict_omic[model_size_omic]
-        fc_omic = [SNN_Block(dim1=omic_input_dim, dim2=hidden[0])]
-        for i, _ in enumerate(hidden[1:]):
-            fc_omic.append(SNN_Block(dim1=hidden[i], dim2=hidden[i+1], dropout=0.25))
-        self.fc_omic = nn.Sequential(*fc_omic)
-        #self.classifier = nn.Linear(hidden[-1], n_classes)
-        init_max_weights(self)
-
-
-    def forward(self,  x,return_feats=False):
-        
-        #x = kwargs['data_omics']
-        h_omic = self.fc_omic(x)
-        #h  = self.classifier(h_omic) # logits needs to be a [B x 4] vector      
-        #assert len(h.shape) == 2 and h.shape[1] == self.n_classes
-        if return_feats:
-            return h_omic#, h
-        return h_omic
-
-    def relocate(self):
-            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            if torch.cuda.device_count() > 1:
-                device_ids = list(range(torch.cuda.device_count()))
-                self.fc_omic = nn.DataParallel(self.fc_omic, device_ids=device_ids).to('cuda:0')
-            else:
-                self.fc_omic = self.fc_omic.to(device)
-
-
-            self.classifier = self.classifier.to(device)
-
-
-
-
-
-#%%
-
-def Reg_Block(dim1, dim2, dropout=0.25):
-    r"""
-    Multilayer Reception Block (Linear + ReLU + Dropout)
-
-    args:
-        dim1 (int): Dimension of input features
-        dim2 (int): Dimension of output features
-        dropout (float): Dropout rate
-    """
-    import torch.nn as nn
-
-    return nn.Sequential(
-            nn.Linear(dim1, dim2),
-            nn.ReLU(),
-            nn.Dropout(p=dropout, inplace=False))
 
 
 class Attn_Net_Gated(nn.Module):
@@ -873,7 +580,7 @@ def init_max_weights(module):
 ################################
 # Attention MIL Implementation #
 ################################
-class ABMIL(nn.Module):
+class MCAT(nn.Module):
     def __init__(self, omic_input_dim=None, fusion=None, size_arg = "small", dropout=0.25, n_classes=4, device="cpu"):
         r"""
         Attention MIL Implementation
@@ -885,7 +592,7 @@ class ABMIL(nn.Module):
             dropout (float): Dropout rate
             n_classes (int): Output shape of NN
         """
-        super(ABMIL, self).__init__()
+        super(MCAT, self).__init__()
         self.device = device
         self.fusion = fusion
         self.size_dict_path = {"small": [1024, 256, 256], "big": [1024, 512, 384]}
@@ -955,6 +662,8 @@ class ABMIL(nn.Module):
 
 
     def forward(self,x_path,x_omic,filename):
+        x_path = x_path.to(device)
+        x_omic = x_omic.to(device)
         #x_path = kwargs['data_WSI'] # if omic shape is  x_path is torch.Size([4, 1024])
         h_path_bag = self.wsi_net(x_path).unsqueeze(1) ### path embeddings are fed through a FC layer the size of this is torch.Size([4, 1, 256])
 
@@ -1011,398 +720,27 @@ class ABMIL(nn.Module):
     
     
     
-    
 
-
+#%%
+# o_dim = 200
+# import pandas as pd
+# image = torch.randn(4,1024)
+# np.random.seed(0)
+# # Generate random numbers
+# data = np.random.randn(1, o_dim)
+# x = torch.randn(1,o_dim)
+# # Create DataFrame
+# dna = pd.DataFrame(data)
+# filename = 'x'
+# #%%
+# lis_fus = ["concat","bilinear","MOAB"]
+# #model = ABMIL(omic_input_dim=o_dim, fusion="bilinear", size_arg = "small", dropout=0.25, n_classes=4, df_comp=dna, dim_per_path_1=16, dim_per_path_2=64, device="cpu")
+# model = MCAT(omic_input_dim=o_dim, fusion=lis_fus[2], size_arg = "small", dropout=0.25, n_classes=4, device=device)
+# model = model.to(device)
+# image = image.to(device)
+# x = x.to(device)
+# logit ,Y_hat= model(image,x,filename)
 
 
 #%%
-"""
-
-Implement Attention MIL for the unimodal (WSI only) and multimodal setting (pathways + WSI). The combining of modalities 
-can be done using bilinear fusion or concatenation. 
-
-Mobadersany, Pooya, et al. "Predicting cancer outcomes from histology and genomics using convolutional networks." Proceedings of the National Academy of Sciences 115.13 (2018): E2970-E2979.
-
-"""
-#%%
-
-
-
-class BilinearFusion(nn.Module):
-    r"""
-    Late Fusion Block using Bilinear Pooling
-
-    args:
-        skip (int): Whether to input features at the end of the layer
-        use_bilinear (bool): Whether to use bilinear pooling during information gating
-        gate1 (bool): Whether to apply gating to modality 1
-        gate2 (bool): Whether to apply gating to modality 2
-        dim1 (int): Feature mapping dimension for modality 1
-        dim2 (int): Feature mapping dimension for modality 2
-        scale_dim1 (int): Scalar value to reduce modality 1 before the linear layer
-        scale_dim2 (int): Scalar value to reduce modality 2 before the linear layer
-        mmhid (int): Feature mapping dimension after multimodal fusion
-        dropout_rate (float): Dropout rate
-    """
-    def __init__(self, skip=0, use_bilinear=0, gate1=1, gate2=1, dim1=128, dim2=128, scale_dim1=1, scale_dim2=1, mmhid=256, dropout_rate=0.25):
-        super(BilinearFusion, self).__init__()
-        self.skip = skip
-        self.use_bilinear = use_bilinear
-        self.gate1 = gate1
-        self.gate2 = gate2
-
-        dim1_og, dim2_og, dim1, dim2 = dim1, dim2, dim1//scale_dim1, dim2//scale_dim2
-        skip_dim = dim1_og+dim2_og if skip else 0
-
-        self.linear_h1 = nn.Sequential(nn.Linear(dim1_og, dim1), nn.ReLU())
-        self.linear_z1 = nn.Bilinear(dim1_og, dim2_og, dim1) if use_bilinear else nn.Sequential(nn.Linear(dim1_og+dim2_og, dim1))
-        self.linear_o1 = nn.Sequential(nn.Linear(dim1, dim1), nn.ReLU(), nn.Dropout(p=dropout_rate))
-
-        self.linear_h2 = nn.Sequential(nn.Linear(dim2_og, dim2), nn.ReLU())
-        self.linear_z2 = nn.Bilinear(dim1_og, dim2_og, dim2) if use_bilinear else nn.Sequential(nn.Linear(dim1_og+dim2_og, dim2))
-        self.linear_o2 = nn.Sequential(nn.Linear(dim2, dim2), nn.ReLU(), nn.Dropout(p=dropout_rate))
-
-        self.post_fusion_dropout = nn.Dropout(p=dropout_rate)
-        self.encoder1 = nn.Sequential(nn.Linear((dim1+1)*(dim2+1), 256), nn.ReLU(), nn.Dropout(p=dropout_rate))
-        self.encoder2 = nn.Sequential(nn.Linear(256+skip_dim, mmhid), nn.ReLU(), nn.Dropout(p=dropout_rate))
-
-    def forward(self, vec1, vec2):
-        
-        ### Gated Multimodal Units
-        if self.gate1:
-            h1 = self.linear_h1(vec1)
-            z1 = self.linear_z1(vec1, vec2) if self.use_bilinear else self.linear_z1(torch.cat((vec1, vec2), dim=1))
-            o1 = self.linear_o1(nn.Sigmoid()(z1)*h1)
-        else:
-            h1 = self.linear_h1(vec1)
-            o1 = self.linear_o1(h1)
-
-        if self.gate2:
-            h2 = self.linear_h2(vec2)
-            z2 = self.linear_z2(vec1, vec2) if self.use_bilinear else self.linear_z2(torch.cat((vec1, vec2), dim=1))
-            o2 = self.linear_o2(nn.Sigmoid()(z2)*h2)
-        else:
-            h2 = self.linear_h2(vec2)
-            o2 = self.linear_o2(h2)
-
-        ### Fusion
-        o1 = torch.cat((o1, torch.FloatTensor(o1.shape[0], 1).fill_(1)), 1) # TODO change back to cuda 
-        o2 = torch.cat((o2, torch.FloatTensor(o2.shape[0], 1).fill_(1)), 1) # # TODO change back to cuda 
-        o12 = torch.bmm(o1.unsqueeze(2), o2.unsqueeze(1)).flatten(start_dim=1) # BATCH_SIZE X 1024
-        out = self.post_fusion_dropout(o12)
-        out = self.encoder1(out)
-        if self.skip: out = torch.cat((out, vec1, vec2), 1)
-        out = self.encoder2(out)
-        return out
-
-#%%
-
-
-##########################
-#### Genomic SNN FC Model ####
-##########################
-
-def SNN_Block(dim1, dim2, dropout=0.25):
-    r"""
-    Multilayer Reception Block w/ Self-Normalization (Linear + ELU + Alpha Dropout)
-
-    args:
-        dim1 (int): Dimension of input features
-        dim2 (int): Dimension of output features
-        dropout (float): Dropout rate
-    """
-    import torch.nn as nn
-
-    return nn.Sequential(
-            nn.Linear(dim1, dim2),
-            nn.ELU(),
-            nn.AlphaDropout(p=dropout, inplace=False))
-
-
-class SNNOmics(nn.Module):
-    def __init__(self, omic_input_dim: int, model_size_omic: str='small', n_classes: int=256):
-        super(SNNOmics, self).__init__()
-        self.n_classes = n_classes
-        self.size_dict_omic = {'small': [256, 256], 'big': [1024, 1024, 1024, 256]}
-        
-        ### Constructing Genomic SNN
-        hidden = self.size_dict_omic[model_size_omic]
-        fc_omic = [SNN_Block(dim1=omic_input_dim, dim2=hidden[0])]
-        for i, _ in enumerate(hidden[1:]):
-            fc_omic.append(SNN_Block(dim1=hidden[i], dim2=hidden[i+1], dropout=0.25))
-        self.fc_omic = nn.Sequential(*fc_omic)
-        #self.classifier = nn.Linear(hidden[-1], n_classes)
-        init_max_weights(self)
-
-
-    def forward(self,  x,return_feats=False):
-        
-        #x = kwargs['data_omics']
-        h_omic = self.fc_omic(x)
-        #h  = self.classifier(h_omic) # logits needs to be a [B x 4] vector      
-        #assert len(h.shape) == 2 and h.shape[1] == self.n_classes
-        if return_feats:
-            return h_omic#, h
-        return h_omic
-
-    def relocate(self):
-            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            if torch.cuda.device_count() > 1:
-                device_ids = list(range(torch.cuda.device_count()))
-                self.fc_omic = nn.DataParallel(self.fc_omic, device_ids=device_ids).to('cuda:0')
-            else:
-                self.fc_omic = self.fc_omic.to(device)
-
-
-            self.classifier = self.classifier.to(device)
-
-
-
-
-
-#%%
-
-def Reg_Block(dim1, dim2, dropout=0.25):
-    r"""
-    Multilayer Reception Block (Linear + ReLU + Dropout)
-
-    args:
-        dim1 (int): Dimension of input features
-        dim2 (int): Dimension of output features
-        dropout (float): Dropout rate
-    """
-    import torch.nn as nn
-
-    return nn.Sequential(
-            nn.Linear(dim1, dim2),
-            nn.ReLU(),
-            nn.Dropout(p=dropout, inplace=False))
-
-
-class Attn_Net_Gated(nn.Module):
-    def __init__(self, L = 1024, D = 256, dropout = False, n_classes = 1):
-        r"""
-        Attention Network with Sigmoid Gating (3 fc layers)
-
-        args:
-            L (int): input feature dimension
-            D (int): hidden layer dimension
-            dropout (bool): whether to apply dropout (p = 0.25)
-            n_classes (int): number of classes
-        """
-        super(Attn_Net_Gated, self).__init__()
-        self.attention_a = [
-            nn.Linear(L, D),
-            nn.Tanh()]
-        
-        self.attention_b = [nn.Linear(L, D), nn.Sigmoid()]
-        if dropout:
-            self.attention_a.append(nn.Dropout(0.25))
-            self.attention_b.append(nn.Dropout(0.25))
-
-        self.attention_a = nn.Sequential(*self.attention_a)
-        self.attention_b = nn.Sequential(*self.attention_b)
-        self.attention_c = nn.Linear(D, n_classes)
-
-    def forward(self, x):
-        a = self.attention_a(x)
-        b = self.attention_b(x)
-        A = a.mul(b)
-        A = self.attention_c(A)  # N x n_classes
-        return A, x
-
-
-def init_max_weights_survpath(module):
-    r"""
-    Initialize Weights function.
-
-    args:
-        modules (torch.nn.Module): Initalize weight using normal distribution
-    """
-    import math
-    import torch.nn as nn
-    
-    for m in module.modules():
-        if type(m) == nn.Linear:
-            stdv = 1. / math.sqrt(m.weight.size(1))
-            m.weight.data.normal_(0, stdv)
-            m.bias.data.zero_()
-
-def init_max_weights(module):
-    for m in module.modules():
-        if isinstance(m, nn.Linear):
-            nn.init.xavier_normal_(m.weight)
-            m.bias.data.zero_()
-        
-        elif isinstance(m, nn.BatchNorm1d):
-            nn.init.constant_(m.weight, 1)
-            nn.init.constant_(m.bias, 0)
-
-#%%
-################################
-# Attention MIL Implementation #
-################################
-class MCAT_MOAB(nn.Module):
-    def __init__(self, omic_input_dim=None, fusion=None, size_arg = "small", dropout=0.25, n_classes=4, device="cpu"):
-        r"""
-        Attention MIL Implementation
-
-        Args:
-            omic_input_dim (int): Dimension size of genomic features.
-            fusion (str): Fusion method (Choices: concat, bilinear, or None)
-            size_arg (str): Size of NN architecture (Choices: small or large)
-            dropout (float): Dropout rate
-            n_classes (int): Output shape of NN
-        """
-        super(MCAT_MOAB, self).__init__()
-        self.device = device
-        self.fusion = fusion
-        self.size_dict_path = {"small": [1024, 256, 256], "big": [1024, 512, 384]}
-        self.size_dict_omic = {'small': [256, 256]}
-
-        ### Deep Sets Architecture Construction
-        size = self.size_dict_path[size_arg]
-        fc = [nn.Linear(size[0], size[1]), nn.ReLU()]
-        self.wsi_net = nn.Sequential(*fc)
-
-        #attention_net = Attn_Net_Gated(L=size[1], D=size[2], dropout=dropout, n_classes=1)
-        #fc.append(attention_net)
-        #self.attention_net = nn.Sequential(*fc)
-        self.snn_omic =  SNNOmics(omic_input_dim)
-
-        self.input_dim = omic_input_dim
-
-        ### Constructing Genomic SNN
-        
-        ### Multihead Attention
-        self.coattn = MultiheadAttention(embed_dim=256, num_heads=1)
-        ### Path Transformer + Attention Head
-        path_encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=8, dim_feedforward=512, dropout=dropout, activation='relu')
-        self.path_transformer = nn.TransformerEncoder(path_encoder_layer, num_layers=2)
-        self.path_attention_head = Attn_Net_Gated(L=size[2], D=size[2], dropout=dropout, n_classes=1)
-        self.path_rho = nn.Sequential(*[nn.Linear(size[2], size[2]), nn.ReLU(), nn.Dropout(dropout)])
-        
-        ### Omic Transformer + Attention Head
-        omic_encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=8, dim_feedforward=512, dropout=dropout, activation='relu')
-        self.omic_transformer = nn.TransformerEncoder(omic_encoder_layer, num_layers=2)
-        self.omic_attention_head = Attn_Net_Gated(L=size[2], D=size[2], dropout=dropout, n_classes=1)
-        self.omic_rho = nn.Sequential(*[nn.Linear(size[2], size[2]), nn.ReLU(), nn.Dropout(dropout)])
-        
-        
-        if self.fusion is not None:
-            
-            #self.num_pathways = self.df_comp.shape[1]
-
-            if self.fusion == "concat":
-                self.mm = nn.Sequential(*[nn.Linear(256*2, size[2]), nn.ReLU(), nn.Linear(size[2], size[2]), nn.ReLU()])
-            elif self.fusion == 'bilinear':
-                self.mm = BilinearFusion(dim1=256, dim2=256, scale_dim1=8, scale_dim2=8, mmhid=256)
-            elif self.fusion == 'MOAB':
-                #self.mm = MOAB(size[1]) # the size of output here should be 256 this if we want to use two linear layers in MOAB
-                self.mm = MOAB(n_classes) # if we send the number of classes, then we will get our final logits from MOAB 
-            else:
-                self.mm = None
-            self.activation = nn.ReLU()
-            self.snn_omic = self.snn_omic.to(self.device)
-            self.mm = self.mm.to(self.device)
-
-        self.classifier = nn.Linear(size[2], n_classes)
-        self.classifier = self.classifier.to(self.device)
-        self.activation = nn.ReLU()
-        
-    def relocate(self):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if torch.cuda.device_count() >= 1:
-            device_ids = list(range(torch.cuda.device_count()))
-            self.attention_net = nn.DataParallel(self.attention_net, device_ids=device_ids).to('cuda:0')
-
-        if self.fusion is not None:
-            self.fc_omic = self.fc_omic.to(device)
-            self.mm = self.mm.to(device)
-
-        self.classifier = self.classifier.to(device)
-
-
-    def forward(self,x_path,x_omic,filename):
-        #x_path = kwargs['data_WSI'] # if omic shape is  x_path is torch.Size([4, 1024])
-        h_path_bag = self.wsi_net(x_path).unsqueeze(1) ### path embeddings are fed through a FC layer the size of this is torch.Size([4, 1, 256])
-
-
-        if self.fusion is not None:
-            
-            x_omic = x_omic.squeeze() # input, torch.Size([200])
-
-
-            #---> apply linear transformation to upscale the dim_per_pathway (from 32 to 256) Lin, GELU, dropout, 
-            h_omic =  self.snn_omic(x_omic).unsqueeze(0) # torch.Size([256])
-            h_omic_bag = h_omic.unsqueeze(1) #torch.Size([256, 1])
-            
-            # Coattn
-            h_path_coattn, A_coattn = self.coattn(h_omic_bag, h_path_bag, h_path_bag)
-            
-            
-            ### Path
-            h_path_trans = self.path_transformer(h_path_coattn)
-            A_path, h_path = self.path_attention_head(h_path_trans.squeeze(1))
-            A_path = torch.transpose(A_path, 1, 0)
-            h_path = torch.mm(F.softmax(A_path, dim=1) , h_path)
-            h_path = self.path_rho(h_path).squeeze()
-            
-            ### Omic
-            h_omic_trans = self.omic_transformer(h_omic_bag)
-            
-            A_omic, h_omic = self.omic_attention_head(h_omic_trans.squeeze(1))
-            A_omic = torch.transpose(A_omic, 1, 0)
-            h_omic = torch.mm(F.softmax(A_omic, dim=1) , h_omic)
-            h_omic = self.omic_rho(h_omic).squeeze()
-
-
-            if self.fusion == 'bilinear':
-                h = self.mm(h_path.unsqueeze(dim=0), h_omic.unsqueeze(dim=0)).squeeze()  # h_path.unsqueeze(dim=0) -->torch.Size([1, 256]), h_omic.unsqueeze(dim=0) -->torch.Size([1, 256]), the output is torch.Size([1, 256]) before the outer squeeze, after it--> torch.Size([256])
-            elif self.fusion == 'MOAB':
-                logits = self.mm(h_path.unsqueeze(dim=0),h_omic)#.squeeze() 
-                prob = F.softmax(logits, dim=1)
-                # return hazards, S, Y_hat, None, None
-                return logits,prob
-            elif self.fusion == 'concat':
-                h = self.mm(torch.cat([h_path, h_omic], axis=0))
-        else:
-            h = h_path # [256] vector
-        
-        logits  = self.classifier(h).unsqueeze(0) # logits needs to be a [1 x 4] vector 
-        prob = F.softmax(logits, dim=1)
-        Y_hat = torch.topk(logits, 1, dim = 1)[1]
-        hazards = torch.sigmoid(logits)
-        S = torch.cumprod(1 - hazards, dim=1)
-        
-        # return hazards, S, Y_hat, None, None
-        return logits,prob
-    
-    
-    
-    
-#%%
-'''
-#%%
-o_dim = 200
-import pandas as pd
-image = torch.randn(4,1024)
-np.random.seed(0)
-# Generate random numbers
-data = np.random.randn(1, o_dim)
-x = torch.randn(1,o_dim)
-# Create DataFrame
-dna = pd.DataFrame(data)
-filename = 'x'
-#%%
-lis_fus = ["concat","bilinear","MOAB",None]
-#model = ABMIL(omic_input_dim=o_dim, fusion="bilinear", size_arg = "small", dropout=0.25, n_classes=4, df_comp=dna, dim_per_path_1=16, dim_per_path_2=64, device="cpu")
-model = ABMIL(omic_input_dim=o_dim, fusion=lis_fus[2], size_arg = "small", dropout=0.25, n_classes=4, device="cpu")
-
-
-logit ,Y_hat= model(image,x,filename)
-
-'''
 
