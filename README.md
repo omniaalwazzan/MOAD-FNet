@@ -1,6 +1,11 @@
 # MOAD-FNet
 
 Welcome to the official repository for **MOAD-FNet**, a multimodal dual-fusion framework that integrates DNA methylation data with whole slide images (WSIs) for precision oncology.  
+
+## 🔬 MOAD-FNet Pipeline
+
+![MOAD-FNet Pipeline](docs/pipeline.png)
+
 This work is currently under **second review at IEEE Transactions on Medical Imaging (TMI)**, and represents a step toward more interpretable and clinically relevant AI for cancer diagnosis and prognosis.  
 
 ---
