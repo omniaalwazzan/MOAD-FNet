@@ -1,0 +1,6 @@
+- This repository contains the implementation of **MOAD-FNet**, a multimodal dual-fusion framework for integrating DNA methylation data with whole slide images (WSIs).  
+- The manuscript is currently under **second review at IEEE Transactions on Medical Imaging (TMI)**.  
+- I will continue updating this repo, and a revised version aligned with the upcoming arXiv preprint will be released soon.  
+- Thank you for your patience and support.  
+- If you have questions or need urgent replication support, please **raise an issue** and I will respond ASAP.  
+- 📄 For details on the method and results, please see the [manuscript on arXiv](https://arxiv.org/abs/2411.17418).  
